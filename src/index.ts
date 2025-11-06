@@ -1,13 +1,18 @@
 import express from 'express';
 import cors from 'cors';
 import { DuckDuckGoScraper } from './scrapers/duckduckgo';
+import { SongkickScraper } from './scrapers/songkick';
+import { EventbriteScraper } from './scrapers/eventbrite';
 import { CacheManager } from './services/cache';
+import { Event } from './types';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Services
-const scraper = new DuckDuckGoScraper();
+const duckduckgoScraper = new DuckDuckGoScraper();
+const songkickScraper = new SongkickScraper();
+const eventbriteScraper = new EventbriteScraper();
 const cache = new CacheManager();
 
 app.use(cors());
@@ -31,34 +36,49 @@ app.get('/api/events/search', async (req, res) => {
     
     console.log(`🔍 Searching: ${q} in ${location}`);
     
-    // Cache key oluştur
-    const cacheKey = cache.generateKey('search', q as string, location as string);
+    const cacheKey = cache.generateKey('search', q, location);
     
-    // Cache'den al veya scrape et
-    const events = await cache.getOrFetch(
-      cacheKey,
-      async () => {
-        console.log(`🕷️ Scraping DuckDuckGo...`);
-        return await scraper.search(q as string, location as string);
-      },
-      14400 // 4 saat cache
-    );
+    const events = await cache.getOrFetch<Event[]>(cacheKey, async () => {
+      console.log('❌ Cache MISS:', cacheKey);
+      console.log('🕷️ Scraping multiple sources...');
+      
+      // Paralel olarak tüm scraper'lardan veri çek
+      const [songkickEvents, eventbriteEvents, duckduckgoEvents] = await Promise.all([
+        songkickScraper.search(location as string).catch(() => []),
+        eventbriteScraper.search(q as string, location as string).catch(() => []),
+        duckduckgoScraper.search(q as string, location as string).catch(() => []),
+      ]);
+      
+      // Tüm sonuçları birleştir
+      const allEvents = [...songkickEvents, ...eventbriteEvents, ...duckduckgoEvents];
+      
+      // Duplicate'leri kaldır (aynı başlık + tarih)
+      const uniqueEvents = allEvents.reduce((acc, event) => {
+        const key = `${event.title}-${event.startDate}`;
+        if (!acc.has(key)) {
+          acc.set(key, event);
+        }
+        return acc;
+      }, new Map<string, Event>());
+      
+      const results = Array.from(uniqueEvents.values());
+      
+      console.log(`✅ Returning ${results.length} unique events (${songkickEvents.length} Songkick, ${eventbriteEvents.length} Eventbrite, ${duckduckgoEvents.length} DuckDuckGo)`);
+      return results;
+    }, 14400); // 4 saat cache
     
     console.log(`✅ Returning ${events.length} events`);
     
     res.json({ 
-      events,
+      events, 
       total: events.length,
       cached: cacheKey,
       query: q,
       location,
     });
   } catch (error: any) {
-    console.error('❌ Search error:', error.message);
-    res.status(500).json({ 
-      error: 'Search failed',
-      message: error.message,
-    });
+    console.error('❌ Search error:', error);
+    res.status(500).json({ error: 'Failed to search events', message: error.message });
   }
 });
 
