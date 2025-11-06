@@ -12,58 +12,58 @@ export class EventbriteAPI {
   private readonly BASE_URL = 'https://www.eventbriteapi.com/v3';
   
   async search(query: string, location: string = 'London'): Promise<Event[]> {
-    if (!this.API_KEY) {
-      console.log('⚠️ EVENTBRITE_TOKEN not set');
-      return [];
-    }
-    
+    // Eventbrite public events - OAuth gerekmez
     try {
-      console.log(`🎫 Eventbrite API: ${query} in ${location}`);
+      console.log(`🎫 Eventbrite Public Search: ${query} in ${location}`);
       
-      // Location'ı geocode ile çevir
-      const locationData = await this.geocodeLocation(location);
+      // Public web scraping endpoint (OAuth gerektirmez)
+      const searchUrl = `https://www.eventbrite.com/d/${location.toLowerCase().replace(/\s+/g, '-')}/${query.toLowerCase().replace(/\s+/g, '-')}/`;
       
-      const response = await axios.get(`${this.BASE_URL}/events/search/`, {
+      console.log(`📍 Searching URL: ${searchUrl}`);
+      
+      const response = await axios.get(searchUrl, {
         headers: {
-          'Authorization': `Bearer ${this.API_KEY}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html',
         },
-        params: {
-          q: query,
-          'location.address': location,
-          'location.within': '50km',
-          'location.latitude': locationData?.latitude,
-          'location.longitude': locationData?.longitude,
-          expand: 'venue,organizer,category',
-          'sort_by': 'date',
-        },
-        timeout: 10000,
+        timeout: 15000,
       });
       
-      const events: Event[] = [];
-      const items = response.data.events || [];
+      // HTML'den JSON parse et (Eventbrite sayfalarında __SERVER_DATA__ var)
+      const html = response.data;
+      const jsonMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
       
-      items.forEach((item: any) => {
-        const venue = item.venue;
-        
+      if (!jsonMatch) {
+        console.log('⚠️ Could not find event data in page');
+        return [];
+      }
+      
+      const pageData = JSON.parse(jsonMatch[1]);
+      const events: Event[] = [];
+      
+      // Event verilerini parse et
+      const eventList = pageData?.props?.pageProps?.searchData?.events?.results || [];
+      
+      eventList.forEach((item: any) => {
         const event: Event = {
           id: `eventbrite-${item.id}`,
-          title: item.name.text,
-          description: item.description?.text || item.summary || '',
-          startDate: item.start.utc,
-          endDate: item.end.utc,
-          timezone: item.start.timezone,
-          url: item.url,
-          imageUrl: item.logo?.url || this.getCategoryImage(item.category?.name),
+          title: item.name,
+          description: item.summary || '',
+          startDate: item.start_date || new Date().toISOString(),
+          endDate: item.end_date || item.start_date || new Date().toISOString(),
+          timezone: 'UTC',
+          url: item.url || `https://www.eventbrite.com/e/${item.id}`,
+          imageUrl: item.image?.url || this.getCategoryImage(query),
           venue: {
-            name: venue?.name || 'Online Event',
-            city: venue?.address?.city || location,
-            region: venue?.address?.region || '',
-            country: venue?.address?.country || '',
-            latitude: parseFloat(venue?.latitude) || 0,
-            longitude: parseFloat(venue?.longitude) || 0,
+            name: item.primary_venue?.name || 'Online Event',
+            city: item.primary_venue?.address?.city || location,
+            region: item.primary_venue?.address?.region || '',
+            country: item.primary_venue?.address?.country || '',
+            latitude: 0,
+            longitude: 0,
           },
-          category: this.mapCategory(item.category?.name || query),
-          isOnline: item.online_event || !venue,
+          category: this.mapCategory(query),
+          isOnline: item.is_online_event || false,
           source: 'eventbrite',
           scrapedAt: new Date().toISOString(),
         };
@@ -71,7 +71,7 @@ export class EventbriteAPI {
         events.push(event);
       });
       
-      console.log(`✅ Eventbrite: ${events.length} events`);
+      console.log(`✅ Eventbrite: ${events.length} events found`);
       return events;
       
     } catch (error: any) {
