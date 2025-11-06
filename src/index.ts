@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { EventbriteAPI } from './scrapers/eventbrite-api';
-import { DuckDuckGoScraper } from './scrapers/duckduckgo';
+import { BandsintownAPI } from './scrapers/bandsintown';
 import { CacheManager } from './services/cache';
 import { Event } from './types';
 
@@ -9,8 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Services
-const eventbrite = new EventbriteAPI();
-const duckduckgo = new DuckDuckGoScraper();
+const bandsintown = new BandsintownAPI();
 const cache = new CacheManager();
 
 app.use(cors());
@@ -34,40 +32,20 @@ app.get('/api/events/search', async (req, res) => {
     
     console.log(`🔍 Searching: ${q} in ${location}`);
     
-    const cacheKey = cache.generateKey('search', q, location);
+    const cacheKey = cache.generateKey('search', q as string, location as string);
     
     const events = await cache.getOrFetch<Event[]>(cacheKey, async () => {
       console.log('❌ Cache MISS:', cacheKey);
-      console.log('🕷️ Fetching from multiple sources...');
+      console.log('🎵 Fetching from Bandsintown API...');
       
-      // API'lardan paralel veri çek
-      const [eventbriteEvents, duckduckgoEvents] = await Promise.all([
-        eventbrite.search(q as string, location as string).catch((err: any) => {
-          console.log('Eventbrite failed:', err.message);
-          return [];
-        }),
-        duckduckgo.search(q as string, location as string).catch((err: any) => {
-          console.log('DuckDuckGo failed:', err.message);
-          return [];
-        }),
-      ]);
+      // Bandsintown API'den veri çek
+      const bandsintownEvents = await bandsintown.searchByLocation(location as string).catch((err: any) => {
+        console.log('Bandsintown failed:', err.message);
+        return [];
+      });
       
-      // Tüm sonuçları birleştir
-      const allEvents = [...eventbriteEvents, ...duckduckgoEvents];
-      
-      // Duplicate'leri kaldır (aynı başlık + tarih)
-      const uniqueEvents = allEvents.reduce((acc, event) => {
-        const key = `${event.title.toLowerCase().trim()}-${event.startDate.split('T')[0]}`;
-        if (!acc.has(key)) {
-          acc.set(key, event);
-        }
-        return acc;
-      }, new Map<string, Event>());
-      
-      const results = Array.from(uniqueEvents.values());
-      
-      console.log(`✅ Total: ${results.length} events (Eventbrite: ${eventbriteEvents.length}, DuckDuckGo: ${duckduckgoEvents.length})`);
-      return results;
+      console.log(`✅ Total: ${bandsintownEvents.length} events from Bandsintown`);
+      return bandsintownEvents;
     }, 14400); // 4 saat cache
     
     console.log(`✅ Returning ${events.length} events`);
