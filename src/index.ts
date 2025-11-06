@@ -1,8 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import { EventbriteAPI } from './scrapers/eventbrite-api';
 import { DuckDuckGoScraper } from './scrapers/duckduckgo';
-import { SongkickScraper } from './scrapers/songkick';
-import { EventbriteScraper } from './scrapers/eventbrite';
 import { CacheManager } from './services/cache';
 import { Event } from './types';
 
@@ -10,9 +9,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Services
-const duckduckgoScraper = new DuckDuckGoScraper();
-const songkickScraper = new SongkickScraper();
-const eventbriteScraper = new EventbriteScraper();
+const eventbrite = new EventbriteAPI();
+const duckduckgo = new DuckDuckGoScraper();
 const cache = new CacheManager();
 
 app.use(cors());
@@ -40,21 +38,26 @@ app.get('/api/events/search', async (req, res) => {
     
     const events = await cache.getOrFetch<Event[]>(cacheKey, async () => {
       console.log('❌ Cache MISS:', cacheKey);
-      console.log('🕷️ Scraping multiple sources...');
+      console.log('🕷️ Fetching from multiple sources...');
       
-      // Paralel olarak tüm scraper'lardan veri çek
-      const [songkickEvents, eventbriteEvents, duckduckgoEvents] = await Promise.all([
-        songkickScraper.search(location as string).catch(() => []),
-        eventbriteScraper.search(q as string, location as string).catch(() => []),
-        duckduckgoScraper.search(q as string, location as string).catch(() => []),
+      // API'lardan paralel veri çek
+      const [eventbriteEvents, duckduckgoEvents] = await Promise.all([
+        eventbrite.search(q as string, location as string).catch((err: any) => {
+          console.log('Eventbrite failed:', err.message);
+          return [];
+        }),
+        duckduckgo.search(q as string, location as string).catch((err: any) => {
+          console.log('DuckDuckGo failed:', err.message);
+          return [];
+        }),
       ]);
       
       // Tüm sonuçları birleştir
-      const allEvents = [...songkickEvents, ...eventbriteEvents, ...duckduckgoEvents];
+      const allEvents = [...eventbriteEvents, ...duckduckgoEvents];
       
       // Duplicate'leri kaldır (aynı başlık + tarih)
       const uniqueEvents = allEvents.reduce((acc, event) => {
-        const key = `${event.title}-${event.startDate}`;
+        const key = `${event.title.toLowerCase().trim()}-${event.startDate.split('T')[0]}`;
         if (!acc.has(key)) {
           acc.set(key, event);
         }
@@ -63,7 +66,7 @@ app.get('/api/events/search', async (req, res) => {
       
       const results = Array.from(uniqueEvents.values());
       
-      console.log(`✅ Returning ${results.length} unique events (${songkickEvents.length} Songkick, ${eventbriteEvents.length} Eventbrite, ${duckduckgoEvents.length} DuckDuckGo)`);
+      console.log(`✅ Total: ${results.length} events (Eventbrite: ${eventbriteEvents.length}, DuckDuckGo: ${duckduckgoEvents.length})`);
       return results;
     }, 14400); // 4 saat cache
     
